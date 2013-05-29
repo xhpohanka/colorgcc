@@ -109,11 +109,16 @@ sub initDefaults {
   $colors{"warningNumberColor"}   = color("yellow");
   $colors{"warningMessageColor"}  = color("yellow");
 
+  $colors{"noteFileNameColor"} = color("green");
+  $colors{"noteNumberColor"}   = color("green");
+  $colors{"noteMessageColor"}  = color("green");
+
   $colors{"errorFileNameColor"} = color("bold red");
   $colors{"errorNumberColor"}   = color("bold red");
   $colors{"errorMessageColor"}  = color("bold red");
 
   @{ $translations{"warning"} } = ();
+  @{ $translations{"note"} } = ();
   @{ $translations{"error"} }   = ();
 }
 
@@ -252,11 +257,25 @@ while (<GCCOUT>) {
       }
     }
 
+    $is_note = 0;
+    for $translation ("note", @{ $translations{"note"} }) {
+      if ($field3 =~ m/\s+$translation:.*/) {
+        $is_note = 1;
+        last;
+      }
+    }
+
     if ($is_warning) {
       # Warning
       print($colors{"warningFileNameColor"}, "$field1:", color("reset"));
       print($colors{"warningNumberColor"},   "$field2:", color("reset"));
       srcscan($field3, $colors{"warningMessageColor"});
+    }
+    elsif ($is_note) {
+      # Note
+      print($colors{"noteFileNameColor"}, "$field1:", color("reset"));
+      print($colors{"noteNumberColor"},   "$field2:", color("reset"));
+      srcscan($field3, $colors{"noteMessageColor"});
     }
     else {
       # Error
@@ -280,10 +299,23 @@ while (<GCCOUT>) {
       }
     }
 
+    $is_note = 0;
+    for $translation ("note", @{ $translations{"note"} }) {
+      if ($field2 =~ m/\s+$translation:.*/) {
+        $is_note = 1;
+        last;
+      }
+    }
+
     if ($is_warning) {
       # Warning
       print($colors{"warningFileNameColor"}, "$field1:", color("reset"));
       srcscan($field2, $colors{"warningMessageColor"});
+    }
+    elsif ($is_note) {
+      # Note
+      print($colors{"noteFileNameColor"}, "$field1:", color("reset"));
+      srcscan($field2, $colors{"noteMessageColor"});
     }
     else {
       # Error

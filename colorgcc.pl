@@ -14,7 +14,6 @@
 #
 # Usage:
 #
-# Option 1)
 # In a directory that occurs in your PATH _before_ the directory
 # where the compiler lives, create a softlink to colorgcc for
 # each compiler you want to colorize:
@@ -26,15 +25,6 @@
 #
 # That's it. When "g++" is invoked, colorgcc is run instead.
 # colorgcc looks at the program name to figure out which compiler to run.
-#
-# Option 2)
-# In a directory in your PATH, create the following links to colorgcc:
-#    color-g++ -> colorgcc
-#    color-c++ -> colorgcc
-#    color-gcc -> colorgcc
-#    color-cc  -> colorgcc
-# Then override the compiler macros for make, for example:
-#    make CXX=color-g++ CC=color-gcc
 #
 # The default settings can be overridden with ~/.colorgccrc.
 # See the comments in the sample .colorgccrc for more information.
@@ -104,13 +94,15 @@ use IPC::Open3;
 sub initDefaults {
   $compilerPaths{"gcc"} = "/usr/bin/gcc";
   $compilerPaths{"g++"} = "/usr/bin/g++";
-  $compilerPaths{"cc"}  = "/usr/bin/cc";
-  $compilerPaths{"c++"} = "/usr/bin/c++";
+  $compilerPaths{"cc"}  = "/usr/bin/gcc";
+  $compilerPaths{"c++"} = "/usr/bin/g++";
+  $compilerPaths{"g77"} = "/usr/bin/g77";
+  $compilerPaths{"f77"} = "/usr/bin/g77";
+  $compilerPaths{"gcj"} = "/usr/bin/gcj";
 
   $nocolor{"dumb"} = "true";
 
   $colors{"srcColor"}   = color("cyan");
-  $colors{"identColor"} = color("green");
   $colors{"introColor"} = color("blue");
 
   $colors{"warningFileNameColor"} = color("yellow");
@@ -120,6 +112,9 @@ sub initDefaults {
   $colors{"errorFileNameColor"} = color("bold red");
   $colors{"errorNumberColor"}   = color("bold red");
   $colors{"errorMessageColor"}  = color("bold red");
+
+  @{ $translations{"warning"} } = ();
+  @{ $translations{"error"} }   = ();
 }
 
 sub loadPreferences {
@@ -129,6 +124,9 @@ sub loadPreferences {
 
   open(PREFS, "<$filename") || return;
 
+  my $gccVersion;
+  my $overrideCompilerPaths = 0;
+
   while (<PREFS>) {
     next if (m/^\#.*/);            # It's a comment.
     next if (!m/(.*):\s*(.*)/);    # It's not of the form "foo: bar".
@@ -136,8 +134,12 @@ sub loadPreferences {
     $option = $1;
     $value  = $2;
 
-    if ($option =~ m/cc|c\+\+|gcc|g\+\+/) {
+    if ($option =~ m/\A(cc|c\+\+|gcc|g\+\+|g77|f77|gcj)\Z/) {
       $compilerPaths{$option} = $value;
+      $overrideCompilerPaths = 1;
+    }
+    elsif ($option eq "gccVersion") {
+      $gccVersion = $value;
     }
     elsif ($option eq "nocolor") {
       # The nocolor option lists terminal types, separated by
@@ -146,11 +148,23 @@ sub loadPreferences {
         $nocolor{$termtype} = "true";
       }
     }
-    else {
+    elsif ($option =~ m/(.+)Translations/) {
+      @{ $translations{$1} } = split(/\s+/, $value);
+    }
+    elsif ($option =~ m/Color$/) {
       $colors{$option} = color($value);
+    }
+    else {
+      # treat unknown options as user defined compilers
+      $compilerPaths{$option} = $value;
     }
   }
   close(PREFS);
+
+  # Append "-<gccVersion>" to user-defined compilerPaths
+  if ($overrideCompilerPaths && $gccVersion) {
+    $compilerPaths{$_} .= "-$gccVersion" foreach (keys %compilerPaths);
+  }
 }
 
 sub srcscan {
@@ -161,22 +175,16 @@ sub srcscan {
   # Looks for text between ` and ', and colors it srcColor.
 
   my ($line, $normalColor) = @_;
+
+  my ($srcon)  = color("reset") . $colors{"srcColor"};
+  my ($srcoff) = color("reset") . $normalColor;
+
   $line = $normalColor . $line;
 
   # This substitute replaces `foo' with `AfooB' where A is the escape
   # sequence that turns on the the desired source color, and B is the
   # escape sequence that returns to $normalColor.
-  my ($srcon)  = color("reset") . $colors{"srcColor"};
-  my ($srcoff) = color("reset") . $normalColor;
-  $line =~ s/\`(.*?)\'/\`$srcon$1$srcoff\'/g;
-
-  # This substitute replaces ‘foo’ with ‘AfooB’ where A is the escape
-  # sequence that turns on the the desired identifier color, and B is the
-  # escape sequence that returns to $normalColor.
-  my ($identon)  = color("reset") . $colors{"identColor"};
-  my ($identoff) = color("reset") . $normalColor;
-
-  $line =~ s/\‘(.*?)\’/\‘$identon$1$identoff\’/g;
+  $line =~ s/(\`|\')(.*?)\'/\`$srcon$2$srcoff\'/g;
 
   print($line, color("reset"));
 }
@@ -189,9 +197,13 @@ sub srcscan {
 initDefaults();
 
 # Read the configuration file, if there is one.
-$configFile = $ENV{"HOME"} . "/.colorgccrc";
+$configFile         = $ENV{"HOME"} . "/.colorgccrc";
+$default_configFile = "/etc/colorgcc/colorgccrc";
 if (-f $configFile) {
   loadPreferences($configFile);
+}
+elsif (-f $default_configFile) {
+  loadPreferences($default_configFile);
 }
 
 # Figure out which compiler to invoke based on our program name.
@@ -199,20 +211,29 @@ $0 =~ m%.*/(.*)$%;
 $progName = $1 || $0;
 
 $compiler = $compilerPaths{$progName} || $compilerPaths{"gcc"};
+@comp_list = split /\s+/, $compiler;
+$compiler  = $comp_list[0];
+@comp_args = (@comp_list[ 1 .. $#comp_list ], @ARGV);
+
+# Check that we don't reference self
+die "$compiler is self-referencing"
+  if (-l $compiler and (stat $compiler)[1] == (stat $0)[1]);
 
 # Get the terminal type.
 $terminal = $ENV{"TERM"} || "dumb";
 
 # If it's in the list of terminal types not to color, or if
 # we're writing to something that's not a tty, don't do color.
-if (!-t STDOUT || $nocolor{$terminal}) {
-  exec $compiler, @ARGV
+if (!$ENV{"CGCC_FORCE_COLOR"} && (!-t STDOUT || $nocolor{$terminal})) {
+  exec $compiler, @comp_args
     or die("Couldn't exec");
 }
 
 # Keep the pid of the compiler process so we can get its return
 # code and use that as our return code.
-$compiler_pid = open3('<&STDIN', \*GCCOUT, '', $compiler, @ARGV);
+$compiler_pid = open3('<&STDIN', \*GCCOUT, \*GCCOUT, $compiler, @comp_args);
+binmode(\*GCCOUT, ":bytes");
+binmode(\*STDOUT, ":bytes");
 
 # Colorize the output from the compiler.
 while (<GCCOUT>) {
@@ -222,7 +243,16 @@ while (<GCCOUT>) {
     $field2 = $2 || "";
     $field3 = $3 || "";
 
-    if ($field3 =~ m/\s+warning:.*/) {
+    # See if this is a warning message.
+    $is_warning = 0;
+    for $translation ("warning", @{ $translations{"warning"} }) {
+      if ($field3 =~ m/\s+$translation:.*/) {
+        $is_warning = 1;
+        last;
+      }
+    }
+
+    if ($is_warning) {
       # Warning
       print($colors{"warningFileNameColor"}, "$field1:", color("reset"));
       print($colors{"warningNumberColor"},   "$field2:", color("reset"));
@@ -233,6 +263,32 @@ while (<GCCOUT>) {
       print($colors{"errorFileNameColor"}, "$field1:", color("reset"));
       print($colors{"errorNumberColor"},   "$field2:", color("reset"));
       srcscan($field3, $colors{"errorMessageColor"});
+    }
+    print("\n");
+  }
+  elsif (m/^(<command-line>):(.*)$/)    # special-location:message
+  {
+    $field1 = $1 || "";
+    $field2 = $2 || "";
+
+    # See if this is a warning message.
+    $is_warning = 0;
+    for $translation ("warning", @{ $translations{"warning"} }) {
+      if ($field2 =~ m/\s+$translation:.*/) {
+        $is_warning = 1;
+        last;
+      }
+    }
+
+    if ($is_warning) {
+      # Warning
+      print($colors{"warningFileNameColor"}, "$field1:", color("reset"));
+      srcscan($field2, $colors{"warningMessageColor"});
+    }
+    else {
+      # Error
+      print($colors{"errorFileNameColor"}, "$field1:", color("reset"));
+      srcscan($field2, $colors{"errorMessageColor"});
     }
     print("\n");
   }
